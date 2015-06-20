@@ -1,0 +1,87 @@
+---
+title: "Prediction Report"
+author: "Gabe Rudy"
+date: "June 18, 2015"
+output: html_document
+---
+
+This report looks at the [training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [testing](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) data for personal activity monitor devices to predict the activity classes of sitting-down, standing-up, standing, walking, and sitting.
+
+The original data is is provided as the [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har) dataset on Groupware LES project. The website posts a 99.41% prediction accuracy as acheivable. Without complex blending techniques, an out of sample error rate under 5% should be very acheiable.
+
+The files were downloaded to the current directory. We first load and do some data tidying.
+
+```{r}
+library(utils)
+train <- read.csv('pml-training.csv', na.strings = c("NA", "#DIV/0!"))
+test <- read.csv('pml-testing.csv', na.strings = c("NA", "#DIV/0!"))
+```
+
+After some explortory analysis, we removing the first 7 columns of time stamps and other non-sensor data. We also drop columns that are mostly NA values and check that our only factor variable is our expected outcome field of classe.
+
+```{r}
+train <- train[,-(1:7)]
+test <- test[,-(1:7)]
+
+#Drop columns that are >= 95% NA values
+keep <- which(sapply(train, function(c) { sum(is.na(c)) / length(c) }) <= 0.95)
+train <- train[,keep]
+test <- test[,keep]
+
+#Confirm no more missings
+sum(sapply(train, function(c) sum(is.na(c))))
+sum(sapply(test, function(c) sum(is.na(c))))
+
+#Check for factor variables
+outcome <- grep("factor", sapply(train, class))
+names(train)[outcome]
+```
+
+Using multiple cores, we build a random forest classifer with just 25% of the data and 5 folds of cross validation. Since we still have ~5,000 observations with a quarter of the data, we should have sufficient data to train on with a reasonable run time. Five folds provides ~1,000 observations to validate the model on and should help in model selection.
+
+```{r, results = "hide", message=FALSE, warning=FALSE}
+# enable multi-core processing
+library(doParallel)
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+library(caret)
+portion <- createDataPartition(y=train$classe, p=0.25, list=FALSE)
+trainQuarter <- train[portion,]
+trainThreeQuarter <- train[-portion,]
+set.seed(12345)
+
+# Do 5-fold cross-validation
+tc <- trainControl(method="cv", number=5)
+fit = train(classe ~ ., method="rf", data=trainQuarter, trainControl=tc)
+```
+
+
+We can use the remaining three quarters of the dataset to estimate the accuracy and out of sample error.
+
+```{r}
+print(fit)
+cm <- confusionMatrix(trainThreeQuarter$classe,predict(fit,trainThreeQuarter))
+print(cm)
+
+#out of sample error
+sum(predict(fit,trainThreeQuarter) != trainThreeQuarter$classe) / nrow(trainThreeQuarter)
+```
+
+So we are getting out of sample error < 2%. Now we make our predictions on the test set and write out the results for uploading to the web-based blink evaluator of the test predictions.
+
+```{r, results = "hide"}
+#save our predictions
+predictions <- as.character(predict(fit, newdata=test))
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(predictions)
+stopCluster(cl) # The stopCluster is necessary to terminate the extra processes
+```
+
